@@ -12,11 +12,8 @@
 	<files>
 		<filename plugin="categories">categories.php</filename>
 		<folder>categories</folder>
+		<folder>language</folder>
 	</files>
-	<languages>
-		<language tag="en-GB">en-GB.plg_api_categories.ini</language>
-		<language tag="en-GB">en-GB.plg_api_categories.sys.ini</language>
-	</languages>
 	<config>
 		<fields name="params">
 			<fieldset name="basic" />

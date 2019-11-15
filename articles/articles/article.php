@@ -126,6 +126,7 @@ class ArticlesApiResourceArticle extends ApiResource
 
 		foreach ($rows as $subKey => $subArray)
 		{
+			$data[$subKey] = new \stdClass();
 			$data[$subKey]->id = $subArray->id;
 			$data[$subKey]->title = $subArray->title;
 			$data[$subKey]->alias = $subArray->alias;

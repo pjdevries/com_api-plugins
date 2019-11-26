@@ -5,6 +5,10 @@
  * @license    GNU GPLv2 <http://www.gnu.org/licenses/old-licenses/gpl-2.0.html>
  * @link       http://www.techjoomla.com
  */
+
+use Joomla\CMS\Helper\MediaHelper;
+use Joomla\Registry\Registry;
+
 defined('_JEXEC') or die( 'Restricted access' );
 require_once JPATH_SITE . '/components/com_content/models/articles.php';
 require_once JPATH_SITE . '/components/com_content/models/article.php';
@@ -16,6 +20,13 @@ require_once JPATH_SITE . '/components/com_content/models/article.php';
  */
 class ArticlesApiResourceArticle extends ApiResource
 {
+	const POST_TOO_BIG = 2001;
+	const IMAGE_TOO_BIG = 2002;
+	const IMAGE_EXISTS = 2003;
+	const IMAGE_UPLOAD_FAILED = 2004;
+	const ARTICLE_DOES_NOT_EXIST = 2008;
+	const ARTICLE_ID_MISSING = 2009;
+
 	/**
 	 * get Method to get all artcle data
 	 *
@@ -69,11 +80,13 @@ class ArticlesApiResourceArticle extends ApiResource
 		$end_date = $app->input->get('end_date_range', '', 'STRING');
 		$realtive_date = $app->input->get('relative_date', '', 'STRING');
 
-		$listOrder = $app->input->get('listOrder', 'ASC', 'STRING');
+		$listOrdering = $app->input->get('listOrdering', 'a.ordering', 'STRING');
+		$listDirection = $app->input->get('listDirection', 'ASC', 'STRING');
 
 		$art_obj = new ContentModelArticles;
 
-		$art_obj->setState('list.direction', $listOrder);
+		$art_obj->setState('list.ordering', $listOrdering);
+		$art_obj->setState('list.direction', $listDirection);
 
 		if ($limit)
 		{
@@ -235,16 +248,46 @@ class ArticlesApiResourceArticle extends ApiResource
 
 		if (empty($app->input->get('introtext', '', 'STRING')))
 		{
-			$obj->success = false;
-			$obj->message = 'Introtext is Missing';
-
-			return $obj;
+//			$obj->success = false;
+//			$obj->message = 'Introtext is Missing';
+//
+//			return $obj;
+			$app->input->set('introtext', '');
 		}
 
 		if (empty($app->input->get('catid', '', 'INT')))
 		{
 			$obj->success = false;
 			$obj->message = 'Category id is Missing';
+
+			return $obj;
+		}
+
+		$uploadConfig = new Registry();
+		$uploadConfig->set('image_dest_folder', 'images');
+		$uploadConfig->set('upload_maxsize', ini_get('upload_max_filesize'));
+		$uploadConfig->set('action_image_file_exists', 'revision');
+
+		try
+		{
+			$files = $app->input->files->get('images', [], 'ARRAY');
+			$imageFilesToUpload = [];
+
+			if (isset($files['image_intro']))
+			{
+				$imageFilesToUpload['image_intro'] = $files['image_intro'];
+			}
+			if (isset($files['image_fulltext']))
+			{
+				$imageFilesToUpload['image_fulltext'] = $files['image_fulltext'];
+			}
+
+			$uploadedImageFiles = $this->upload($imageFilesToUpload, $uploadConfig);
+		}
+		catch (\Exception $e)
+		{
+			$obj->success = false;
+			$obj->message = $e->getMessage();
 
 			return $obj;
 		}
@@ -262,7 +305,7 @@ class ArticlesApiResourceArticle extends ApiResource
 			'catid' => $app->input->get('catid', '', 'INT'),
 			'publish_up' => $app->input->get('publish_up', '', 'STRING'),
 			'publish_down' => $app->input->get('publish_down', '', 'STRING'),
-			'language' => $app->input->get('language', '', 'STRING')
+			'language' => $app->input->get('language', '*', 'STRING')
 			);
 
 			// Bind data
@@ -287,6 +330,18 @@ class ArticlesApiResourceArticle extends ApiResource
 			$article->publish_down = $app->input->get('publish_down', '', 'STRING');
 			$article->language = $app->input->get('language', '', 'STRING');
 		}
+
+		$articleImages = [
+			'image_intro' => $uploadedImageFiles['image_intro'],
+			'float_intro' => '',
+			'image_intro_alt' => '',
+			'image_intro_caption' => '',
+			'image_fulltext' => $uploadedImageFiles['image_fulltext'],
+			'float_fulltext' => '',
+			'image_fulltext_alt' => '',
+			'image_fulltext_caption' => ''
+		];
+		$article->images = json_encode($articleImages);
 
 		// Check the data.
 		if (!$article->check())
@@ -471,5 +526,133 @@ class ArticlesApiResourceArticle extends ApiResource
 		}
 
 		return $truncate;
+	}
+
+	private function upload(array $files, Registry $config)
+	{
+		if (!$files || empty($files) || !array_filter($files))
+		{
+			return [];
+		}
+
+		// Instantiate the media helper
+		$mediaHelper = new MediaHelper();
+
+		// Total length of post back data in bytes.
+		$contentLength = (int) $_SERVER['CONTENT_LENGTH'];
+
+		// Maximum allowed size of post back data in MB.
+		$postMaxSize = $mediaHelper->toBytes(ini_get('post_max_size'));
+
+		// Maximum allowed size of script execution in MB.
+		$memoryLimit = $mediaHelper->toBytes(ini_get('memory_limit'));
+
+		if ($postMaxSize && $memoryLimit != -1)
+		{
+			$contentLengthLimit = min($postMaxSize, $memoryLimit);
+		}
+		else if ($postMaxSize)
+		{
+			$contentLengthLimit = $postMaxSize;
+		}
+		else
+		{
+			$contentLengthLimit = $contentLength;
+		}
+
+		// Check for the total size of post back data.
+		if ($contentLength > $contentLengthLimit)
+		{
+			throw new \Exception('Submitted article is too big!', self::POST_TOO_BIG);
+		}
+
+		$folder = $config->get('image_dest_folder', 0);
+
+		$uploadMaxSize     = $config->get('upload_maxsize', 0) * 1024 * 1024;
+		$uploadMaxFileSize = $mediaHelper->toBytes(ini_get('upload_max_filesize'));
+
+		if ($uploadMaxSize && $uploadMaxFileSize)
+		{
+			$imageMaxSize = min($uploadMaxSize, $uploadMaxFileSize);
+		}
+		else if ($uploadMaxSize)
+		{
+			$imageMaxSize = $uploadMaxSize;
+		}
+		else if ($uploadMaxFileSize)
+		{
+			$imageMaxSize = $uploadMaxFileSize;
+		}
+		else
+		{
+			$imageMaxSize = 0;
+		}
+
+		$uploadedFiles = [];
+
+		foreach ($files as $fieldName => $file)
+		{
+			if ($file['error'] == 1 || ($imageMaxSize && $file['size'] > $imageMaxSize))
+			{
+				// File size exceed either 'upload_max_filesize' or 'upload_maxsize'.
+				throw new \Exception('Submitted image is too big!', self::IMAGE_TOO_BIG);
+			}
+
+			$filename = \JFile::makeSafe($file['name']);
+			$filename = str_replace(' ', '-', $filename);
+			$folder   = \JPath::clean($folder, '/');
+			$filepath = $folder . '/' . $filename;
+
+			if (\JFile::exists($filepath))
+			{
+				switch ($config->get('action_image_file_exists'))
+				{
+					case 'keep':
+						$uploadedFiles[$fieldName] = $filepath;
+						continue;
+
+					case 'revision';
+						$filepath = $this->uniqueFilename($filepath);
+						break;
+
+					case 'error':
+						throw new \Exception('Image already exists!', self::IMAGE_EXISTS);
+				}
+			}
+
+			if (!\JFile::upload($file['tmp_name'], $filepath))
+			{
+				// Error in upload
+				throw new \Exception('Image upload failed!', self::IMAGE_UPLOAD_FAILED);
+			}
+
+			$uploadedFiles[$fieldName] = $filepath;
+		}
+
+		return $uploadedFiles;
+	}
+
+	private function uniqueFilename($filepath, $revision = 1)
+	{
+		static $revisionBase;
+
+		if (!$revisionBase)
+		{
+			$revisionBase = time() . '';
+		}
+
+		$filePathParts = pathinfo($filepath);
+		$newFilepath = $filePathParts['dirname'] . '/' . $filePathParts['filename'] . '-' . $revisionBase . $revision;
+		if (!empty($filePathParts['extension']))
+		{
+			$newFilepath .= '.' . $filePathParts['extension'];
+		}
+
+		if (file_exists($newFilepath))
+		{
+			$newFilepath = $this->uniqueFilename($filepath, ++$revision);
+		}
+
+		return  $newFilepath;
 	}
 }
